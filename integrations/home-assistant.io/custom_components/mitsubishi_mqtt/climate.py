@@ -6,6 +6,8 @@ https://github.com/lekobob/mitsu_mqtt
 """
 
 import logging
+import itertools
+import json
 
 import voluptuous as vol
 
@@ -72,9 +74,53 @@ async def async_setup_platform(hass, config, async_add_devices, discovery_info=N
     )])
 
 
+def _gen_swing():
+    _swing = {
+            'Auto': ('AUTO', '|'),
+            'Horizontal': ('AUTO', 'SWING'),
+            'Vertical': ('SWING', '|'),
+            'Both': ('SWING', 'SWING'),
+    }
+
+    _vert = {
+            'Top':  '1',
+            'High':  '2',
+            'Middle':  '3',
+            'Low':  '4', 
+            'Bottom': '5',
+    }
+
+    _horz = { # Consider '|' == AUTO
+            'Wide left':  '<<',
+            'Left':  '<',
+            'Right':  '>',
+            'Wide right': '>>',
+    }
+
+    for k in _vert:
+        v = _vert[k]
+        _swing['Swing ' + k.lower()] = (v, 'SWING')
+        _swing[k] = (v, '|')
+
+
+    for k in _horz:
+        h = _horz[k]
+        _swing['Swing ' + k.lower()] = ('SWING', h)
+        _swing[k] = ('AUTO', h)
+
+    for (v, h) in itertools.product(_vert, _horz):
+        _swing[v + ' ' + h.lower()] = (_vert[v], _horz[h])
+
+
+    _swing_mqtt = {v: k for (k, v) in _swing.items()}
+    return _swing, _swing_mqtt
+
+
+_swing, _swing_mqtt = _gen_swing()
+
+
 class MqttClimate(ClimateDevice):
     """Representation of a Mitsubishi Minisplit Heatpump controlled over MQTT."""
-
 
     def __init__(self, hass, name, state_topic, temperature_state_topic, command_topic, modes, qos, retain):
         """Initialize the MQTT Heatpump."""
@@ -95,8 +141,8 @@ class MqttClimate(ClimateDevice):
         self._hvac_mode = None
         self._current_power = None
         self._current_status = False
-        self._swing_modes = ["AUTO", "1", "2", "3", "4", "5", "SWING"]
-        self._swing_mode = None
+        self._current_vane = None
+        self._current_wide_vane = None
         self._sub_state = None
 
     async def async_added_to_hass(self):
@@ -123,7 +169,8 @@ class MqttClimate(ClimateDevice):
             if topic == self._state_topic:
                 self._target_temperature = float(parsed['temperature'])
                 self._fan_mode = parsed['fan']
-                self._swing_mode = parsed['vane']
+                self._current_vane = parsed['vane']
+                self._current_wide_vane = parsed['wideVane']
                 if parsed['power'] == "OFF":
                     _LOGGER.debug("Power Off")
                     self._hvac_mode = "OFF"
@@ -237,14 +284,12 @@ class MqttClimate(ClimateDevice):
     @property
     def swing_mode(self):
         """Return the swing setting."""
-        if self._swing_mode is None:
-            return
-        return self._swing_mode.capitalize()
+        return _swing_mqtt[self._current_vane, self._current_wide_vane]
 
     @property
     def swing_modes(self):
         """List of available swing modes."""
-        return [k.capitalize() for k in self._swing_modes]
+        return list(_swing)
 
     async def async_set_temperature(self, **kwargs):
         """Set new target temperatures."""
@@ -281,12 +326,20 @@ class MqttClimate(ClimateDevice):
 
     async def async_set_swing_mode(self, swing_mode):
         """Set new swing mode."""
-        if swing_mode is not None:
-            self._swing_mode = swing_mode.upper()
-            payload = '{"vane":"' + self._swing_mode + '"}'
-            mqtt.async_publish(self.hass, self._command_topic, payload,
-                self._qos, self._retain)
-            self.async_write_ha_state()
+        if not swing:
+            _LOGGER.warn('not changing empty swing')
+            return
+        if swing not in _swing:
+            _LOGGER.warn('bad swing: %s', swing)
+            return
+        self._current_vane, self._current_wide_vane = _swing[swing]
+        _LOGGER.info('parsed %s to %s %s', swing, self._current_vane, self._current_wide_vane)
+        payload = json.dumps({
+            'vane': self._current_vane,
+            'wideVane': self._current_wide_vane,
+            }, separators=(',',':'))
+        mqtt.async_publish(self.hass, self._command_topic, payload, self._qos, self._retain)
+        self.async_write_ha_state()
 
     def _publish_temperature(self):
         if self._target_temperature is None:
