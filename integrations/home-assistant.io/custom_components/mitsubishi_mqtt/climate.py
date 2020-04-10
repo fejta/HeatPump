@@ -5,9 +5,15 @@ For more details about this platform, please refer to the documentation at
 https://github.com/lekobob/mitsu_mqtt
 """
 
-import logging
+from typing import (
+        List
+        Optional,
+        )
 import itertools
 import json
+import logging
+import time
+import traceback
 
 import voluptuous as vol
 
@@ -20,20 +26,37 @@ from homeassistant.components.mqtt.climate import (
 from homeassistant.components.climate import (
     ClimateDevice)
 from homeassistant.components.climate.const import (
+    SUPPORT_FAN_MODE,
+    SUPPORT_SWING_MODE,
     SUPPORT_TARGET_TEMPERATURE,
-    SUPPORT_FAN_MODE, SUPPORT_SWING_MODE,
-    HVAC_MODE_AUTO, HVAC_MODE_OFF, HVAC_MODE_COOL, HVAC_MODE_DRY, HVAC_MODE_HEAT, HVAC_MODE_FAN_ONLY,
-    CURRENT_HVAC_OFF, CURRENT_HVAC_HEAT, CURRENT_HVAC_COOL, CURRENT_HVAC_DRY, CURRENT_HVAC_IDLE, CURRENT_HVAC_FAN)
-from homeassistant.const import (
-    CONF_NAME, CONF_VALUE_TEMPLATE, TEMP_CELSIUS, ATTR_TEMPERATURE)
+)
+from homeassistant.components.climate.const import (
+    HVAC_MODE_COOL,
+    HVAC_MODE_DRY,
+    HVAC_MODE_FAN_ONLY,
+    HVAC_MODE_HEAT,
+    HVAC_MODE_HEAT_COOL,
+    HVAC_MODE_OFF,
+)
 
-import homeassistant.components.mqtt as mqtt
+from homeassistant.components.climate.const import (
+    CURRENT_HVAC_COOL,
+    CURRENT_HVAC_DRY,
+    CURRENT_HVAC_FAN,
+    CURRENT_HVAC_HEAT,
+    CURRENT_HVAC_IDLE,
+    CURRENT_HVAC_OFF,
+)
+from homeassistant.const import (
+    ATTR_TEMPERATURE,
+    CONF_NAME,
+    CONF_VALUE_TEMPLATE,
+    TEMP_CELSIUS,
+)
+
+from homeassistant.components import mqtt
 import homeassistant.helpers.config_validation as cv
 from homeassistant.util.temperature import convert as convert_temp
-from numbers import Number
-import json
-import time
-import traceback
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -53,7 +76,14 @@ PLATFORM_SCHEMA = mqtt.MQTT_RW_PLATFORM_SCHEMA.extend({
 
 TARGET_TEMPERATURE_STEP = 1
 
-ha_to_me = {HVAC_MODE_AUTO: 'AUTO', HVAC_MODE_COOL: 'COOL', HVAC_MODE_DRY: 'DRY', HVAC_MODE_HEAT: 'HEAT', HVAC_MODE_FAN_ONLY: 'FAN', HVAC_MODE_OFF: 'OFF'}
+ha_to_me = {
+    HVAC_MODE_COOL: 'COOL',
+    HVAC_MODE_DRY: 'DRY',
+    HVAC_MODE_FAN_ONLY: 'FAN',
+    HVAC_MODE_HEAT_COOL: 'AUTO',
+    HVAC_MODE_HEAT: 'HEAT',
+    HVAC_MODE_OFF: 'OFF',
+}
 me_to_ha = {v: k for k, v in ha_to_me.items()}
 
 # pylint: disable=unused-argument
@@ -203,12 +233,12 @@ class MqttClimate(ClimateDevice):
         await MqttAvailability.async_will_remove_from_hass(self)
 
     @property
-    def supported_features(self):
+    def supported_features(self) -> int:
         """Return the list of supported features."""
         return SUPPORT_FLAGS
 
     @property
-    def target_temperature_step(self):
+    def target_temperature_step(self) -> Optional[float]:
         """Return the target temperature step."""
         return TARGET_TEMPERATURE_STEP
 
@@ -223,34 +253,34 @@ class MqttClimate(ClimateDevice):
         return self._name
 
     @property
-    def temperature_unit(self):
+    def temperature_unit(self) -> str:
         """Return the unit of measurement."""
         return TEMP_CELSIUS
 
     @property
-    def target_temperature(self):
+    def target_temperature(self) -> Optional[float]:
         """Return the temperature we try to reach."""
         return self._target_temperature
 
     @property
-    def current_temperature(self):
+    def current_temperature(self) -> Optional[float]:
         """Return the current temperature."""
         return self._current_temperature
 
     @property
-    def fan_mode(self):
+    def fan_mode(self) -> Optional[str]:
         """Return the fan setting."""
         if self._fan_mode is None:
             return
         return self._fan_mode.capitalize()
 
     @property
-    def fan_modes(self):
+    def fan_modes(self) -> Optional[List[str]]:
         """List of available fan modes."""
         return [k.capitalize() for k in self._fan_modes]
 
     @property
-    def hvac_action(self):
+    def hvac_action(self) -> Optional[str]:
         if self._current_power == 'OFF':
             return CURRENT_HVAC_OFF
 
@@ -267,7 +297,7 @@ class MqttClimate(ClimateDevice):
         return CURRENT_HVAC_IDLE
 
     @property
-    def hvac_mode(self):
+    def hvac_mode(self) -> str:
         """Return current operation ie. heat, cool, idle."""
         if self._hvac_mode is None:
             return HVAC_MODE_OFF
@@ -277,54 +307,62 @@ class MqttClimate(ClimateDevice):
             return me_to_ha[self._hvac_mode]
 
     @property
-    def hvac_modes(self):
+    def hvac_modes(self) -> List[str]:
         """List of available operation modes."""
         return [me_to_ha[k] for k in self._hvac_modes]
 
     @property
-    def swing_mode(self):
+    def swing_mode(self) -> Optional[str]:
         """Return the swing setting."""
         return _swing_mqtt[self._current_vane, self._current_wide_vane]
 
     @property
-    def swing_modes(self):
+    def swing_modes(self) -> Optional[List[str]]:
         """List of available swing modes."""
         return list(_swing)
 
-    async def async_set_temperature(self, **kwargs):
+    async def async_set_temperature(self, temperature=None, hvac_mode=None) -> None:
         """Set new target temperatures."""
-        if kwargs.get(ATTR_TEMPERATURE) is not None:
-            # This is also be set via the mqtt callback
-            self._target_temperature = kwargs.get(ATTR_TEMPERATURE)
-        if 'hvac_mode' in kwargs:
-            await self.async_set_hvac_mode(kwargs['hvac_mode'])
-        self._publish_temperature()
-        self.async_write_ha_state()
+        if not temperature:
+            return
+        self._target_temperature = temperature
+        payload = dict(temperature=str(float(self._target_temperature * 2)))
+        if not hvac_mode:
+            self._publish(payload)
+            return
+        self.async_set_hvac_mode(hvac_mode, payload=payload)
 
-    async def async_set_fan_mode(self, fan_mode):
+    async def async_set_fan_mode(self, fan_mode) -> None:
         """Set new fan mode."""
-        if fan_mode is not None:
-            self._fan_mode = fan_mode.upper()
-            payload = '{"fan":"' + self._fan_mode + '"}'
-            mqtt.async_publish(self.hass, self._command_topic, payload,
-                self._qos, self._retain)
-            self.async_write_ha_state()
+        if not fan_mode:
+            return
+        self._fan_mode = fan_mode.upper()
+        self._publish(dict(fan=self._fan_mode))
 
-    async def async_set_hvac_mode(self, hvac_mode):
+    async def async_set_hvac_mode(self, hvac_mode, payload=None) -> None:
         """Set new operating mode."""
-        if hvac_mode is not None:
-            self._hvac_mode = ha_to_me[hvac_mode]
-            if self._hvac_mode == "OFF":
-                payload = '{"power":"OFF"}'
-                self._current_power = "OFF"
-            else:
-                payload = '{"power":"ON","mode":"' + self._hvac_mode + '"}'
-                self._current_power = "ON"
-            mqtt.async_publish(self.hass, self._command_topic, payload,
-                self._qos, self._retain)
-            self.async_write_ha_state()
+        if not hvac_mode:
+            return
+        self._hvac_mode = ha_to_me[hvac_mode]
+        payload = payload or {}
+        if self._hvac_mode == "OFF":
+            payload['power'] = "OFF"
+            self._current_power = "OFF"
+        else:
+            payload['power'] = "ON"
+            payload['mode'] = self._hvac_mode
+            self._current_power = "ON"
+        self._publish(payload)
 
-    async def async_set_swing_mode(self, swing_mode):
+    async def async_turn_on(self) -> None:
+        self._current_power = "ON"
+        self._publish(dict(power="ON"))
+
+    async def async_turn_off(self) -> None:
+        self._current_power = "OFF"
+        self._publish(dict(power="OFF"))
+
+    async def async_set_swing_mode(self, swing_mode) -> None:
         """Set new swing mode."""
         if not swing:
             _LOGGER.warn('not changing empty swing')
@@ -334,16 +372,17 @@ class MqttClimate(ClimateDevice):
             return
         self._current_vane, self._current_wide_vane = _swing[swing]
         _LOGGER.info('parsed %s to %s %s', swing, self._current_vane, self._current_wide_vane)
-        payload = json.dumps({
+        self._publish({
             'vane': self._current_vane,
             'wideVane': self._current_wide_vane,
-            }, separators=(',',':'))
-        mqtt.async_publish(self.hass, self._command_topic, payload, self._qos, self._retain)
-        self.async_write_ha_state()
+        })
 
-    def _publish_temperature(self):
-        if self._target_temperature is None:
-            return
-        unencoded = '{"temperature":' + str(round(self._target_temperature * 2) / 2.0) + '}'
-        mqtt.async_publish(self.hass, self._command_topic, unencoded,
-                     self._qos, self._retain)
+    def _publish(self, payload):
+        mqtt.async_publish(
+                self.hass,
+                self._command_topic,
+                json.dumps(payload, separators(',',':')),
+                self._qos,
+                self._retain,
+        )
+        self.async_write_ha_state()
