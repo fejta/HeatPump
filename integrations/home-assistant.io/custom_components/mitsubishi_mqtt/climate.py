@@ -30,6 +30,8 @@ import homeassistant.helpers.config_validation as cv
 from homeassistant.util.temperature import convert as convert_temp
 from numbers import Number
 import json
+import time
+import traceback
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -135,7 +137,7 @@ class MqttClimate(ClimateDevice):
                 self._current_temperature = float(parsed['roomTemperature'])
                 self._current_status = bool(parsed['operating'])
             else:
-                print("unknown topic")
+                _LOGGER.warn("unknown topic=%s", topic)
             self.async_write_ha_state()
             _LOGGER.debug("Power=%s, Operation=%s", self._current_power, self._hvac_mode)
 
@@ -249,6 +251,8 @@ class MqttClimate(ClimateDevice):
         if kwargs.get(ATTR_TEMPERATURE) is not None:
             # This is also be set via the mqtt callback
             self._target_temperature = kwargs.get(ATTR_TEMPERATURE)
+        if 'hvac_mode' in kwargs:
+            await self.async_set_hvac_mode(kwargs['hvac_mode'])
         self._publish_temperature()
         self.async_write_ha_state()
 
