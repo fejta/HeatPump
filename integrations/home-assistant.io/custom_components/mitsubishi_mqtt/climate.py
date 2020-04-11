@@ -6,14 +6,11 @@ https://github.com/lekobob/mitsu_mqtt
 """
 
 from typing import (
-        List,
-        Optional,
-        )
+        List, Optional,
+)
 import itertools
 import json
 import logging
-import time
-import traceback
 
 import voluptuous as vol
 
@@ -25,7 +22,7 @@ from homeassistant.components.mqtt import (
     MqttAttributes,
     MqttAvailability,
     subscription,
-    )
+)
 
 from homeassistant.components.mqtt.climate import (
     CONF_TEMP_STATE_TOPIC, CONF_MODE_LIST)
@@ -239,17 +236,8 @@ class MqttClimate(ClimateDevice):
         for topic in [self._state_topic, self._temperature_state_topic]:
             add_subscription(topics, topic, message_received)
 
-        attempts = 0
-        while True:
-            attempts += 1
-            try:
-                self._sub_state = await subscription.async_subscribe_topics(
-                    self.hass, self._sub_state, topics)
-            except Exception:
-                if attempts == 5:
-                    raise
-                time.sleep(1)
-            break
+        self._sub_state = await subscription.async_subscribe_topics(
+                self.hass, self._sub_state, topics)
 
     async def async_will_remove_from_hass(self):
         """Unsubscribe when removed."""
@@ -296,7 +284,7 @@ class MqttClimate(ClimateDevice):
     @property
     def fan_mode(self) -> Optional[str]:
         """Return the fan setting."""
-        if self._fan_mode is None:
+        if not self._fan_mode:
             return
         return self._fan_mode.capitalize()
 
@@ -340,14 +328,16 @@ class MqttClimate(ClimateDevice):
     @property
     def swing_mode(self) -> Optional[str]:
         """Return the swing setting."""
-        return self._swing_mqtt[self._current_vane, self._current_wide_vane]
+        cv = self._current_vane or 'AUTO'
+        cwv = self._current_wide_vane or '|'
+        return self._swing_mqtt[cv, cwv]
 
     @property
     def swing_modes(self) -> Optional[List[str]]:
         """List of available swing modes."""
         return list(self._swing)
 
-    async def async_set_temperature(self, temperature=None, hvac_mode=None) -> None:
+    async def async_set_temperature(self, temperature=None, hvac_mode=None, **kwargs) -> None:
         """Set new target temperatures."""
         if not temperature:
             return
@@ -356,7 +346,7 @@ class MqttClimate(ClimateDevice):
         if not hvac_mode:
             self._publish(payload)
             return
-        self.async_set_hvac_mode(hvac_mode, payload=payload)
+        await self.async_set_hvac_mode(hvac_mode, payload=payload)
 
     async def async_set_fan_mode(self, fan_mode) -> None:
         """Set new fan mode."""
