@@ -342,7 +342,7 @@ class MqttClimate(ClimateDevice):
         if not temperature:
             return
         self._target_temperature = temperature
-        payload = dict(temperature=str(float(self._target_temperature * 2)))
+        payload = dict(temperature=str(round(temperature * 2)/2.0))
         if not hvac_mode:
             self._publish(payload)
             return
@@ -394,6 +394,7 @@ class MqttClimate(ClimateDevice):
         self._publish(payload)
 
     def _publish(self, payload) -> None:
+        _LOGGER.info('publish payload=%s', payload)
         mqtt.async_publish(
                 self.hass,
                 self._command_topic,
