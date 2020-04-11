@@ -6,7 +6,7 @@ https://github.com/lekobob/mitsu_mqtt
 """
 
 from typing import (
-        List
+        List,
         Optional,
         )
 import itertools
@@ -18,8 +18,14 @@ import traceback
 import voluptuous as vol
 
 from homeassistant.components.mqtt import (
-    CONF_STATE_TOPIC, CONF_COMMAND_TOPIC, CONF_QOS, CONF_RETAIN, MqttAttributes, MqttAvailability,
-    subscription)
+    CONF_COMMAND_TOPIC,
+    CONF_QOS,
+    CONF_RETAIN,
+    CONF_STATE_TOPIC,
+    MqttAttributes,
+    MqttAvailability,
+    subscription,
+    )
 
 from homeassistant.components.mqtt.climate import (
     CONF_TEMP_STATE_TOPIC, CONF_MODE_LIST)
@@ -68,10 +74,13 @@ SUPPORT_FLAGS = SUPPORT_TARGET_TEMPERATURE | SUPPORT_FAN_MODE | SUPPORT_SWING_MO
 
 AVAILABLE_MODES = ["AUTO", "COOL", "DRY", "HEAT", "FAN", "OFF"]
 
+CONF_WIDE_VANE = 'wide_vane'
+
 PLATFORM_SCHEMA = mqtt.MQTT_RW_PLATFORM_SCHEMA.extend({
     vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
     vol.Optional(CONF_TEMP_STATE_TOPIC): mqtt.valid_subscribe_topic,
     vol.Optional(CONF_MODE_LIST, default=AVAILABLE_MODES): cv.ensure_list,
+    vol.Optional(CONF_WIDE_VANE, default=False): cv.boolean,
 })
 
 TARGET_TEMPERATURE_STEP = 1
@@ -101,6 +110,7 @@ async def async_setup_platform(hass, config, async_add_devices, discovery_info=N
         config.get(CONF_MODE_LIST),
         config.get(CONF_QOS),
         config.get(CONF_RETAIN),
+        config.get(CONF_WIDE_VANE),
     )])
 
 
@@ -147,12 +157,14 @@ def _gen_swing():
 
 
 _swing, _swing_mqtt = _gen_swing()
+_swing_vert = {k: v for (k, v) in _swing.items() if v[1] == '|'}
+_swing_vert_mqtt = {v: k for (k, v) in _swing_vert.items()}
 
 
 class MqttClimate(ClimateDevice):
     """Representation of a Mitsubishi Minisplit Heatpump controlled over MQTT."""
 
-    def __init__(self, hass, name, state_topic, temperature_state_topic, command_topic, modes, qos, retain):
+    def __init__(self, hass, name, state_topic, temperature_state_topic, command_topic, modes, qos, retain, wide_vane):
         """Initialize the MQTT Heatpump."""
         self._state = False
         self._hass = hass
@@ -169,11 +181,18 @@ class MqttClimate(ClimateDevice):
         self._fan_mode = None
         self._hvac_modes = modes
         self._hvac_mode = None
-        self._current_power = None
-        self._current_status = False
+        self._powered = False
+        self._operating = False
         self._current_vane = None
         self._current_wide_vane = None
         self._sub_state = None
+        self._wide_vane = wide_vane
+        if wide_vane:
+            self._swing = _swing
+            self._swing_mqtt = _swing_mqtt
+        else:
+            self._swing = _swing_vert
+            self._swing_mqtt = _swing_vert_mqtt
 
     async def async_added_to_hass(self):
         """Handle being added to home assistant."""
@@ -200,30 +219,37 @@ class MqttClimate(ClimateDevice):
                 self._target_temperature = float(parsed['temperature'])
                 self._fan_mode = parsed['fan']
                 self._current_vane = parsed['vane']
-                self._current_wide_vane = parsed['wideVane']
+                self._current_wide_vane = parsed.get('wideVane')
                 if parsed['power'] == "OFF":
                     _LOGGER.debug("Power Off")
-                    self._hvac_mode = "OFF"
-                    self._current_power = "OFF"
+                    self._powered = False
                 else:
                     _LOGGER.debug("Power On")
                     self._hvac_mode = parsed['mode']
-                    self._current_power = "ON"
+                    self._powered = True
             elif topic == self._temperature_state_topic:
                 _LOGGER.debug('Room Temp: {0}'.format(parsed['roomTemperature']))
                 self._current_temperature = float(parsed['roomTemperature'])
-                self._current_status = bool(parsed['operating'])
+                self._operating = bool(parsed['operating'])
             else:
                 _LOGGER.warn("unknown topic=%s", topic)
             self.async_write_ha_state()
-            _LOGGER.debug("Power=%s, Operation=%s", self._current_power, self._hvac_mode)
+            _LOGGER.debug("Power=%s, Operation=%s", self._powered, self._hvac_mode)
 
         for topic in [self._state_topic, self._temperature_state_topic]:
             add_subscription(topics, topic, message_received)
 
-        self._sub_state = await subscription.async_subscribe_topics(
-            self.hass, self._sub_state, topics)
-
+        attempts = 0
+        while True:
+            attempts += 1
+            try:
+                self._sub_state = await subscription.async_subscribe_topics(
+                    self.hass, self._sub_state, topics)
+            except Exception:
+                if attempts == 5:
+                    raise
+                time.sleep(1)
+            break
 
     async def async_will_remove_from_hass(self):
         """Unsubscribe when removed."""
@@ -281,30 +307,30 @@ class MqttClimate(ClimateDevice):
 
     @property
     def hvac_action(self) -> Optional[str]:
-        if self._current_power == 'OFF':
+        if not self._powered:
             return CURRENT_HVAC_OFF
 
-        if self._current_status:
-            if self._hvac_mode == 'HEAT':
+        if not self._operating:
+            return CURRENT_HVAC_IDLE
+        if self._hvac_mode == 'AUTO':
+            if self._current_temperature < self._target_temperature:
                 return CURRENT_HVAC_HEAT
-            if self._hvac_mode == 'COOL':
-                return CURRENT_HVAC_COOL
-            if self._hvac_mode == 'DRY':
-                return CURRENT_HVAC_DRY
-            if self._hvac_mode == 'FAN':
-                return CURRENT_HVAC_FAN
-
-        return CURRENT_HVAC_IDLE
+            return CURRENT_HVAC_COOL
+        if self._hvac_mode == 'HEAT':
+            return CURRENT_HVAC_HEAT
+        if self._hvac_mode == 'COOL':
+            return CURRENT_HVAC_COOL
+        if self._hvac_mode == 'DRY':
+            return CURRENT_HVAC_DRY
+        if self._hvac_mode == 'FAN':
+            return CURRENT_HVAC_FAN
 
     @property
     def hvac_mode(self) -> str:
         """Return current operation ie. heat, cool, idle."""
-        if self._hvac_mode is None:
+        if not self._hvac_mode or not self._powered:
             return HVAC_MODE_OFF
-        if self._current_power == "OFF":
-            return HVAC_MODE_OFF
-        else:
-            return me_to_ha[self._hvac_mode]
+        return me_to_ha[self._hvac_mode]
 
     @property
     def hvac_modes(self) -> List[str]:
@@ -314,12 +340,12 @@ class MqttClimate(ClimateDevice):
     @property
     def swing_mode(self) -> Optional[str]:
         """Return the swing setting."""
-        return _swing_mqtt[self._current_vane, self._current_wide_vane]
+        return self._swing_mqtt[self._current_vane, self._current_wide_vane]
 
     @property
     def swing_modes(self) -> Optional[List[str]]:
         """List of available swing modes."""
-        return list(_swing)
+        return list(self._swing)
 
     async def async_set_temperature(self, temperature=None, hvac_mode=None) -> None:
         """Set new target temperatures."""
@@ -340,48 +366,48 @@ class MqttClimate(ClimateDevice):
         self._publish(dict(fan=self._fan_mode))
 
     async def async_set_hvac_mode(self, hvac_mode, payload=None) -> None:
-        """Set new operating mode."""
+        """Set new operating mode and potentially temperature."""
         if not hvac_mode:
             return
-        self._hvac_mode = ha_to_me[hvac_mode]
         payload = payload or {}
-        if self._hvac_mode == "OFF":
+        if hvac_mode == HVAC_MODE_OFF:
             payload['power'] = "OFF"
-            self._current_power = "OFF"
+            self._powered = False
         else:
             payload['power'] = "ON"
+            self._powered = True
+            self._hvac_mode = ha_to_me[hvac_mode]
             payload['mode'] = self._hvac_mode
-            self._current_power = "ON"
         self._publish(payload)
 
     async def async_turn_on(self) -> None:
-        self._current_power = "ON"
+        self._powered = True
         self._publish(dict(power="ON"))
 
     async def async_turn_off(self) -> None:
-        self._current_power = "OFF"
+        self._powered = False
         self._publish(dict(power="OFF"))
 
     async def async_set_swing_mode(self, swing_mode) -> None:
         """Set new swing mode."""
-        if not swing:
+        if not swing_mode:
             _LOGGER.warn('not changing empty swing')
             return
-        if swing not in _swing:
-            _LOGGER.warn('bad swing: %s', swing)
+        if swing_mode not in self._swing:
+            _LOGGER.warn('bad swing_mode: %s', swing_mode)
             return
-        self._current_vane, self._current_wide_vane = _swing[swing]
-        _LOGGER.info('parsed %s to %s %s', swing, self._current_vane, self._current_wide_vane)
-        self._publish({
-            'vane': self._current_vane,
-            'wideVane': self._current_wide_vane,
-        })
+        self._current_vane, self._current_wide_vane = self._swing[swing_mode]
+        payload = dict(vane=self._current_vane)
+        if self._wide_vane:
+            payload['wideVane'] = self._current_wide_vane
+        _LOGGER.debug('parsed %s to %s %s', swing_mode, self._current_vane, self._current_wide_vane)
+        self._publish(payload)
 
-    def _publish(self, payload):
+    def _publish(self, payload) -> None:
         mqtt.async_publish(
                 self.hass,
                 self._command_topic,
-                json.dumps(payload, separators(',',':')),
+                json.dumps(payload, separators=(',',':')),
                 self._qos,
                 self._retain,
         )
