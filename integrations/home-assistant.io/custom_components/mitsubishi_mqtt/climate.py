@@ -394,7 +394,7 @@ class MqttClimate(ClimateDevice):
         self._publish(payload)
 
     def _publish(self, payload) -> None:
-        _LOGGER.info('publish payload=%s', payload)
+        _LOGGER.debug('publish payload=%s', payload)
         mqtt.async_publish(
                 self.hass,
                 self._command_topic,
