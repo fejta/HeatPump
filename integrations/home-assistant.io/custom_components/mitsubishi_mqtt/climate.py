@@ -27,7 +27,7 @@ from homeassistant.components.mqtt import (
 from homeassistant.components.mqtt.climate import (
     CONF_TEMP_STATE_TOPIC, CONF_MODE_LIST)
 from homeassistant.components.climate import (
-    ClimateDevice)
+    ClimateEntity)
 from homeassistant.components.climate.const import (
     SUPPORT_FAN_MODE,
     SUPPORT_SWING_MODE,
@@ -158,7 +158,7 @@ _swing_vert = {k: v for (k, v) in _swing.items() if v[1] == '|'}
 _swing_vert_mqtt = {v: k for (k, v) in _swing_vert.items()}
 
 
-class MqttClimate(ClimateDevice):
+class MqttClimate(ClimateEntity):
     """Representation of a Mitsubishi Minisplit Heatpump controlled over MQTT."""
 
     def __init__(self, hass, name, state_topic, temperature_state_topic, command_topic, modes, qos, retain, wide_vane):
