@@ -19,9 +19,12 @@ from homeassistant.components.mqtt import (
     CONF_QOS,
     CONF_RETAIN,
     CONF_STATE_TOPIC,
+    subscription,
+)
+
+from homeassistant.components.mqtt.mixins import (
     MqttAttributes,
     MqttAvailability,
-    subscription,
 )
 
 from homeassistant.components.mqtt.climate import (
